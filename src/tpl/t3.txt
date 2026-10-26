@@ -1,0 +1,259 @@
+  }
+  function renderEnd() {
+    const cid = cur, a = ANN[cid], done = !!S.done[cid];
+    const prev = cid > 0 ? CH[cid - 1] : null, next = cid < N - 1 ? CH[cid + 1] : null;
+    let h = `<div class="done-banner ${done ? '' : 'pending'}">${medal('i-book', done ? '' : 'lock')}<div><b>${done ? 'Chapter complete' : 'Read to the end to complete'}</b><span>${done ? '+40 XP earned · quiz unlocked below' : '+40 XP and a quiz when you finish'}</span></div></div>`;
+    if (done) {
+      h += `<div class="brief"><h2>This chapter in brief</h2><p>${esc(a.summary)}</p></div>`;
+      h += quizHTML(cid);
+    }
+    h += `<div class="nav"><button id="nav-prev" ${prev ? '' : 'disabled'}><small>Previous</small><span>${prev ? esc(prev.title) : '—'}</span></button><button class="next" id="nav-next" ${next ? '' : 'disabled'}><small>${next ? 'Next · Ch. ' + num(cid + 1) : 'The end'}</small><span>${next ? esc(next.title) : 'Farewell'}</span></button></div>`;
+    $('endcard').innerHTML = h;
+    if (prev) $('nav-prev').onclick = () => go(cid - 1, 0);
+    if (next) $('nav-next').onclick = () => go(cid + 1, 0);
+    wireQuiz($('endcard'), cid);
+  }
+  function go(cid, pi) { closeSheet(); openReader(Math.max(0, Math.min(N - 1, cid)), pi || 0); }
+
+  // ---------- observer ----------
+  let io;
+  function observe() {
+    if (io) io.disconnect();
+    io = new IntersectionObserver(entries => {
+      entries.forEach(en => { const i = +en.target.dataset.i; en.isIntersecting ? visible.add(i) : visible.delete(i); });
+      if (visible.size) { top = Math.min(...visible); bottom = Math.max(...visible); }
+      const prevFar = S.far[cur] != null ? S.far[cur] : -1;
+      if (bottom > prevFar) {
+        S.far[cur] = bottom;
+        if (bottom === CH[cur].paras.length - 1 && !S.done[cur]) completeChapter();
+        else afterChangeSoon();
+      }
+      updateStrip(); updateProgress(); saveSoon();
+    }, { rootMargin: '-60px 0px -80px 0px', threshold: 0 });
+    document.querySelectorAll('.txt [data-i]').forEach(el => io.observe(el));
+  }
+  let acT; function afterChangeSoon() { clearTimeout(acT); acT = setTimeout(afterChange, 600); }
+  function completeChapter() {
+    S.done[cur] = 1; markDay(); S.days[today()] = (S.days[today()] || 0) + 1;
+    Object.keys(ANN[cur].updates || {}).forEach(collect);
+    (ANN[cur].where || []).forEach(collect);
+    toast(`<div class="ic"><svg><use href="#i-book"/></svg></div><div><b>Chapter ${num(cur)} complete</b><span><span class="xp">+40 XP</span> · A quiz is waiting at the end</span></div>`);
+    floatXP(40); renderEnd(); afterChange();
+  }
+
+  // ---------- strip ----------
+  let lastStrip = '';
+  function updateStrip() {
+    const c = CH[cur], ids = [];
+    const idx = visible.size ? [...visible].sort((a, b) => a - b) : [top];
+    idx.forEach(i => (c.paras[i] ? c.paras[i].e : []).forEach(id => { if (!ids.includes(id)) ids.push(id); }));
+    const order = { person: 0, place: 1, theme: 2 };
+    ids.sort((a, b) => order[E[a].kind] - order[E[b].kind] || RORD[E[a].r] - RORD[E[b].r]);
+    const list = ['gandhi', ...ids.filter(x => x !== 'gandhi')];
+    let changed = false; const fresh = new Set();
+    list.forEach(id => { if (collect(id)) { changed = true; fresh.add(id); } });
+    if (changed) afterChangeSoon();
+    const key = list.join(','); if (key === lastStrip && !fresh.size) return; lastStrip = key;
+    $('strip').innerHTML = list.map(id => chip(id).replace('class="chip', fresh.has(id) ? 'class="chip new' : 'class="chip')).join('');
+  }
+  function updateProgress() { $('prog').style.width = ((offs[cur] + top) / tot * 100).toFixed(2) + '%'; }
+  let tmr; function save() { S.pos = { c: cur, p: top }; persist(); } function saveSoon() { clearTimeout(tmr); tmr = setTimeout(save, 400); }
+  addEventListener('pagehide', save); document.addEventListener('visibilitychange', () => { if (document.hidden) save(); });
+
+  // ---------- quiz ----------
+  function rng(seed) { let s = seed * 9301 + 49297; return () => { s = (s * 9301 + 49297) % 233280; return s / 233280; }; }
+  function shuffle(a, r) { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+  const firstSentence = s => (s.match(/^.*?[.!?](?=\s|$)/) || [s])[0];
+  const quizCache = {};
+  function quizFor(cid) {
+    if (quizCache[cid]) return quizCache[cid];
+    const r = rng(cid + 7), a = ANN[cid], qs = [];
+    const inCh = new Set([...Object.keys(a.updates || {}), ...Object.keys(E).filter(k => E[k].mentions[cid])]);
+    const ppl = Object.keys(a.updates || {}).filter(k => k !== 'gandhi' && E[k] && E[k].kind === 'person');
+    if (ppl.length) {
+      const ans = ppl[Math.floor(r() * ppl.length)];
+      let pool = ALL.filter(k => E[k].kind === 'person' && !inCh.has(k) && E[k].first <= cid && k !== 'gandhi');
+      if (pool.length < 3) pool = ALL.filter(k => E[k].kind === 'person' && !inCh.has(k) && k !== 'gandhi');
+      const opts = shuffle([ans, ...shuffle(pool, r).slice(0, 3)], r);
+      qs.push({ q: 'Who plays a part in this chapter?', o: opts.map(k => short(E[k].name)), a: opts.indexOf(ans), x: E[ans].intro });
+    }
+    const pl = (a.where || []).filter(k => E[k]);
+    if (pl.length) {
+      const ans = pl[0];
+      let pool = ALL.filter(k => E[k].kind === 'place' && !(a.where || []).includes(k) && E[k].first <= cid);
+      if (pool.length < 3) pool = ALL.filter(k => E[k].kind === 'place' && !(a.where || []).includes(k));
+      const opts = shuffle([ans, ...shuffle(pool, r).slice(0, 3)], r);
+      qs.push({ q: 'Where does this chapter mostly take place?', o: opts.map(k => short(E[k].name)), a: opts.indexOf(ans), x: E[ans].intro });
+    }
+    const others = shuffle([...Array(N).keys()].filter(i => Math.abs(i - cid) >= 3 && ANN[i].summary), r).slice(0, 3);
+    const opts = shuffle([cid, ...others], r);
+    qs.push({ q: 'Which of these happens in this chapter?', o: opts.map(i => firstSentence(ANN[i].summary)), a: opts.indexOf(cid), x: 'That moment comes from Ch. ' + num(cid) + '.' });
+    return (quizCache[cid] = qs);
+  }
+  function quizHTML(cid) {
+    const qs = quizFor(cid); if (!qs.length) return '';
+    const st = S.quiz[cid];
+    let h = `<section class="quiz" data-quiz="${cid}"><h2>Chapter quiz · ${qs.length} questions · +20 XP each</h2>`;
+    qs.forEach((q, qi) => {
+      const ans = st && st.a ? st.a[qi] : null;
+      h += `<div class="q" data-q="${qi}"><div class="qn">Question ${qi + 1}</div><div class="qt">${esc(q.q)}</div>`;
+      q.o.forEach((o, oi) => {
+        const cls = ans == null ? '' : oi === q.a ? 'right' : oi === ans ? 'wrong' : '';
+        h += `<button class="opt ${cls}" data-o="${oi}" ${ans != null ? 'disabled' : ''}>${esc(o)}</button>`;
+      });
+      h += `</div>`;
+    });
+    if (st && st.a && st.a.every(v => v != null)) h += `<div class="qres"><svg width="20" height="20"><use href="#i-star"/></svg> ${st.ok} of ${st.n} right · +${st.ok * 20} XP</div>`;
+    return h + `</section>`;
+  }
+  function wireQuiz(root, cid) {
+    root.querySelectorAll(`[data-quiz="${cid}"] .opt`).forEach(b => b.onclick = () => {
+      const qs = quizFor(cid), qi = +b.closest('.q').dataset.q, oi = +b.dataset.o;
+      const st = S.quiz[cid] = S.quiz[cid] || { a: qs.map(() => null), ok: 0, n: qs.length };
+      if (st.a[qi] != null) return;
+      st.a[qi] = oi; const right = oi === qs[qi].a; if (right) st.ok++;
+      const qel = b.closest('.q');
+      qel.querySelectorAll('.opt').forEach((x, i) => { x.disabled = true; if (i === qs[qi].a) x.classList.add('right'); else if (i === oi) x.classList.add('wrong'); });
+      if (right) floatXP(20, b);
+      persist();
+      if (st.a.every(v => v != null)) {
+        const sec = b.closest('[data-quiz]'); const res = document.createElement('div'); res.className = 'qres';
+        res.innerHTML = `<svg width="20" height="20"><use href="#i-star"/></svg> ${st.ok} of ${st.n} right · +${st.ok * 20} XP`; sec.appendChild(res);
+        if (st.ok === st.n) confetti();
+        afterChange();
+        if ($('home') && !$('home').hidden) {}
+      } else afterChangeSoon();
+    });
+  }
+
+  // ---------- sheet ----------
+  let lastFocus = null;
+  function openSheet(title, html, after, dark) {
+    lastFocus = document.activeElement;
+    $('sh-title').textContent = title; $('sh-body').innerHTML = html; $('sh-body').scrollTop = 0;
+    $('sheet').classList.toggle('dark', !!dark);
+    $('sheet').hidden = false; $('scrim').hidden = false; document.body.style.overflow = 'hidden';
+    if (after) after($('sh-body'));
+    $('sh-close').focus({ preventScroll: true });
+  }
+  function closeSheet() { if ($('sheet').hidden) return; $('sheet').hidden = true; $('scrim').hidden = true; document.body.style.overflow = ''; if (lastFocus && lastFocus.focus) lastFocus.focus({ preventScroll: true }); }
+  $('sh-close').onclick = closeSheet; $('scrim').onclick = closeSheet;
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeSheet(); if (!$('modal').hidden) { $('modal').hidden = true; $('modal').innerHTML = ''; } } });
+
+  function profile(eid) {
+    const e = E[eid]; if (!e) return;
+    if (!S.cards[eid]) { openSheet('Locked card', `<p>You haven't met this one yet. Keep reading.</p>`); return; }
+    const st = latestStatus(eid);
+    const items = (upd[eid] || []).filter(([c]) => c <= cur);
+    const curItem = items.find(([c]) => c === cur), past = items.filter(([c]) => c < cur).reverse();
+    const locked = curItem && !passed(eid, cur) && !revealed.has(eid);
+    const im = e.img && IMGS[e.img];
+    let h = `<div class="pf"><div class="pf-top">${card(eid)}<div><div class="pf-kind ${e.r}">${RAR[e.r]} · ${eid === 'gandhi' ? 'Narrator' : KIND[e.kind]}</div><h2>${esc(e.name)}</h2><div class="first">First met in Ch. ${num(e.first)}${e.first === cur ? ' (this chapter)' : ''}</div></div></div>`;
+    if (st) h += `<div class="now"><b>Now${st[0] === cur ? '' : ' · as of Ch. ' + num(st[0])}</b><span>${esc(st[1])}</span></div>`;
+    h += `<p class="who">${esc(e.intro)}</p>`;
+    if (im) h += `<p class="pc">Photo: ${esc(im.cap || short(e.name))}${im.date ? ', ' + esc(im.date) : ''}. Wikimedia Commons, public domain.</p>`;
+    h += `<div class="sec">What has happened so far</div>`;
+    if (curItem || past.length) {
+      h += `<ol class="tl">`;
+      if (curItem) h += locked
+        ? `<li class="cur lock"><div class="c">Ch. ${num(cur)} · this chapter</div><div class="x">More on ${esc(short(e.name))} later in this chapter. It fills in as you read on.<br><button class="reveal" data-reveal="${eid}">Show it now</button></div></li>`
+        : `<li class="cur"><div class="c">Ch. ${num(cur)} · this chapter</div><div class="x">${esc(curItem[1])}</div></li>`;
+      past.forEach(([c, v]) => { h += `<li><div class="c"><button data-goch="${c}">Ch. ${num(c)}</button> · ${esc(CH[c].title)}</div><div class="x">${esc(v)}</div></li>`; });
+      h += `</ol>`;
+    } else h += `<p class="first">Only a mention so far.</p>`;
+    h += `</div>`;
+    openSheet(eid === 'gandhi' ? 'Narrator' : KIND[e.kind] + ' card', h, body => {
+      body.querySelectorAll('[data-reveal]').forEach(b => b.onclick = () => { revealed.add(b.dataset.reveal); profile(b.dataset.reveal); });
+      body.querySelectorAll('[data-goch]').forEach(b => b.onclick = () => go(+b.dataset.goch, 0));
+    });
+  }
+
+  let cKind = 'person';
+  function cardsSheet() {
+    const draw = body => {
+      const ids = ALL.filter(k => E[k].kind === cKind);
+      const got = ids.filter(k => S.cards[k]).sort((a, b) => RORD[E[a].r] - RORD[E[b].r] || (a === 'gandhi' ? -1 : b === 'gandhi' ? 1 : E[a].first - E[b].first));
+      const lock = ids.filter(k => !S.cards[k]).sort((a, b) => RORD[E[a].r] - RORD[E[b].r]);
+      const total = ALL.length, have = ALL.filter(k => S.cards[k]).length;
+      body.innerHTML = `<div class="meter"><span>${have} / ${total}</span><div class="xpbar"><i style="width:${have / total * 100}%"></i></div><span>${Math.round(have / total * 100)}%</span></div>` +
+        `<div class="seg" role="group" aria-label="Card type">${['person', 'place', 'theme'].map(k => `<button data-k="${k}" aria-pressed="${cKind === k}">${{ person: 'People', place: 'Places', theme: 'Themes' }[k]} ${ALL.filter(x => E[x].kind === k && S.cards[x]).length}</button>`).join('')}</div>` +
+        `<div class="grid">${got.map(k => card(k)).join('')}${lock.map(k => card(k, true)).join('')}</div>`;
+      body.querySelectorAll('.seg button').forEach(b => b.onclick = () => { cKind = b.dataset.k; draw(body); });
+    };
+    openSheet('Card collection', '', draw, true);
+  }
+  function journeySheet() {
+    const fs = k => { const cs = Object.keys(E[k].mentions).map(Number).filter(c => c >= 2); return cs.length ? Math.min(...cs) : E[k].first; };
+    const places = ALL.filter(k => E[k].kind === 'place').sort((a, b) => fs(a) - fs(b));
+    const got = places.filter(k => S.cards[k]), nxt = places.find(k => !S.cards[k]);
+    let h = `<div class="meter"><span>${got.length} / ${places.length} places</span><div class="xpbar"><i style="width:${got.length / places.length * 100}%"></i></div></div><ol class="jr">`;
+    got.forEach(k => { const e = E[k]; h += `<li><button data-e="${k}"><span class="pin">${e.img ? `<img src="${imgSrc(e.img)}" alt="" loading="lazy">` : esc(initials(e.name))}</span><span><b>${esc(short(e.name))}</b><span>First reached in Ch. ${num(fs(k))} · ${esc(ANN[fs(k)].when || '')}</span></span></button></li>`; });
+    if (nxt) h += `<li class="lock"><button disabled><span class="pin">?</span><span><b>Next destination</b><span>Keep reading to find out</span></span></button></li>`;
+    openSheet('Your journey', h + '</ol>', null, true);
+  }
+  function badgesSheet() {
+    let h = `<div class="sec">Milestones</div><div class="badges">`;
+    ALLB.forEach((b, i) => {
+      if (i === MILE.length) h += `</div><div class="sec">Feats</div><div class="badges">`;
+      const got = !!S.badges[b.id]; const secret = !got && b.c != null && b.c > cur + 1;
+      h += `<div class="bdg ${got ? '' : 'lock'}">${medal(b.ic, got ? '' : 'lock')}<b>${secret ? 'Secret milestone' : esc(b.t)}</b><span>${esc(b.d)}</span></div>`;
+    });
+    openSheet('Badges', h + '</div>', null, true);
+  }
+  function questsSheet() {
+    const pend = Object.keys(S.done).map(Number).filter(c => !S.quiz[c] && quizFor(c).length).sort((a, b) => b - a);
+    const t = S.days[today()] || 0;
+    let h = `<div class="sec">Today</div><div class="meter"><span>Daily goal: finish 1 chapter</span><div class="xpbar"><i style="width:${Math.min(1, t) * 100}%"></i></div><span>${Math.min(t, 1)}/1</span></div>`;
+    h += `<div class="sec">Quizzes waiting · ${pend.length}</div>`;
+    h += pend.length ? `<ul class="list">${pend.map(c => `<li><button data-qz="${c}"><span class="av" style="background:var(--gold);color:var(--gold-ink)"><svg width="20" height="20"><use href="#i-quest"/></svg></span><div><div class="n" style="color:#F6F2E6">Ch. ${num(c)} · ${esc(CH[c].title)}</div><div class="s" style="color:var(--on-night-2)">${quizFor(c).length} questions · up to +${quizFor(c).length * 20} XP</div></div><span class="ch" style="color:var(--gold-2)">Play</span></button></li>`).join('')}</ul>` : `<p style="color:var(--on-night-2)">No quizzes waiting. Finish a chapter to unlock one.</p>`;
+    openSheet('Quizzes', h, body => body.querySelectorAll('[data-qz]').forEach(b => b.onclick = () => quizSheet(+b.dataset.qz)), true);
+  }
+  function quizSheet(cid) {
+    openSheet('Quiz · Ch. ' + num(cid), `<p style="margin:0 0 12px;font-weight:700">${esc(CH[cid].title)}</p>` + quizHTML(cid), body => wireQuiz(body, cid));
+  }
+  function storySheet() {
+    let h = `<p class="first" style="margin-top:0">Everything up to the start of Ch. ${num(cur)}, newest first.</p><ul class="list">`;
+    for (let i = cur - 1; i >= 0; i--) {
+      const hk = HERO[i];
+      h += `<li><button data-goch="${i}"><span class="av" style="border-radius:10px">${hk && IMGS[hk] ? `<img src="${imgSrc(hk)}" alt="" loading="lazy">` : num(i)}</span><div><div class="n">Ch. ${num(i)} · ${esc(CH[i].title)}</div><div class="s">${esc(ANN[i].summary)}</div></div><span class="ch">${esc((ANN[i].when || '').split(/[–(]/)[0])}</span></button></li>`;
+    }
+    openSheet('The story so far', h + '</ul>', body => body.querySelectorAll('[data-goch]').forEach(b => b.onclick = () => go(+b.dataset.goch, 0)));
+  }
+  function tocSheet() {
+    let h = `<div class="settings"><div class="grp" role="group" aria-label="Text size"><button id="fs-dn" aria-label="Smaller text">A−</button><button id="fs-up" aria-label="Larger text">A+</button></div><div class="grp" role="group" aria-label="Theme">${['system', 'light', 'dark'].map(t => `<button data-t="${t}" aria-pressed="${S.theme === t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div></div>`;
+    h += `<form class="jump" id="jump"><input id="jump-n" type="number" inputmode="numeric" min="1" max="${N}" placeholder="Ch. no." aria-label="Chapter number"><button class="btn" type="submit">Go to chapter</button></form>`;
+    let part = null; h += `<div class="toc">`;
+    CH.forEach((c, i) => {
+      if (c.part !== part) { if (part !== null) h += `</ul>`; part = c.part; h += `<div class="toc-part">${esc(part)}</div><ul class="list">`; }
+      h += `<li class="${i === cur ? 'cur' : ''}"><button data-goch="${i}" ${i === cur ? 'aria-current="true"' : ''}><span class="num">${num(i)}</span><div><div class="n">${esc(c.title)}</div><div class="s">${esc(ANN[i].when || '')}</div></div>${S.done[i] ? `<span class="ok-dot" aria-label="Completed"><svg><use href="#i-check"/></svg></span>` : '<span></span>'}</button></li>`;
+    });
+    h += `</ul></div>`;
+    openSheet('Contents', h, body => {
+      body.querySelectorAll('[data-goch]').forEach(b => b.onclick = () => go(+b.dataset.goch, 0));
+      body.querySelector('#fs-dn').onclick = () => { S.fs = Math.max(15, S.fs - 1); applyPrefs(); persist(); };
+      body.querySelector('#fs-up').onclick = () => { S.fs = Math.min(26, S.fs + 1); applyPrefs(); persist(); };
+      body.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { S.theme = b.dataset.t; applyPrefs(); persist(); body.querySelectorAll('[data-t]').forEach(x => x.setAttribute('aria-pressed', x === b)); });
+      body.querySelector('#jump').onsubmit = ev => { ev.preventDefault(); const n = parseInt(body.querySelector('#jump-n').value, 10); if (n >= 1 && n <= N) go(n - 1, 0); };
+      const c = body.querySelector('.cur'); if (c) c.scrollIntoView({ block: 'center' });
+    });
+  }
+  function creditsSheet() {
+    const ks = Object.keys(IMGS);
+    let h = `<p class="first" style="margin-top:0">Every photo comes from Wikimedia Commons and is in the public domain. The text is Mahadev Desai's 1927–29 translation, also in the public domain (Standard Ebooks edition).</p><ul class="list">`;
+    ks.forEach(k => { const m = IMGS[k]; h += `<li><a href="${esc(m.src)}" target="_blank" rel="noopener" style="display:grid;grid-template-columns:40px minmax(0,1fr);gap:12px;align-items:center;padding:8px 0;color:inherit;text-decoration:none;border-top:1px solid var(--rule)"><span class="av" style="border-radius:8px"><img src="${imgSrc(k)}" alt="" loading="lazy"></span><span><span class="n" style="font-size:13.5px">${esc(m.cap || m.file)}</span><span class="s" style="display:block">${esc([m.date, m.credit].filter(Boolean).join(' · '))}</span></span></a></li>`; });
+    openSheet('Photo credits', h + '</ul>');
+  }
+
+  // ---------- events ----------
+  document.addEventListener('click', ev => { const b = ev.target.closest('[data-e]'); if (b && !b.disabled) { ev.preventDefault(); profile(b.dataset.e); } });
+  $('btn-home').onclick = () => { save(); renderHome(); };
+  $('btn-story').onclick = storySheet; $('btn-cards').onclick = cardsSheet; $('btn-toc').onclick = tocSheet;
+  $('xp-pill').onclick = () => { const P = xpParts(), L = levelOf(P.xp); modal(`${medal('i-wheel', '')}<small>Level ${L.n}</small><h2>${esc(L.title)}</h2><p>${P.xp.toLocaleString()} XP${L.hi > L.lo ? ' · ' + (L.hi - P.xp).toLocaleString() + ' to go' : ''}</p><p style="font-size:13px">Paragraphs ${P.paras} × 2 · Chapters ${P.done} × 40 · Cards ${P.cards} × 15 · Quiz answers ${P.quiz} × 20 · Badges ${P.badges} × 100</p><button class="btn gold" data-close>Close</button>`); };
+
+  // ---------- start ----------
+  const m = /^#ch(\d+)$/.exec(location.hash || '');
+  if (m && +m[1] >= 1 && +m[1] <= N) { cur = +m[1] - 1; top = 0; }
+  checkBadges(); lastLevel = levelOf(xpParts().xp).n; persist();
+  renderHome();
+})();
+</script>
