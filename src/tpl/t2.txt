@@ -1,0 +1,251 @@
+  const short = n => n.replace(/\s*\(.*?\)\s*/g, ' ').trim();
+  const initials = n => { const w = n.replace(/\(.*?\)/g, '').replace(/['‘’"]/g, '').split(/[\s\-&]+/).filter(x => x && /[A-Za-z]/.test(x[0]) && !/^(the|of|and|with|in|Dr\.|Mr\.|Mrs\.|Sir|Lord|Rev\.|Miss|Lady)$/i.test(x)); return ((w[0] || n)[0] + (w.length > 1 ? w[w.length - 1][0] : (w[0] || '').slice(1, 2))).toUpperCase(); };
+  const KIND = { person: 'Person', place: 'Place', theme: 'Theme' };
+  const RAR = { legendary: 'Legendary', epic: 'Epic', rare: 'Rare', common: 'Common' };
+  const RORD = { legendary: 0, epic: 1, rare: 2, common: 3 };
+  const hue = s => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+
+  // ---------- precompute ----------
+  const offs = []; let tot = 0; CH.forEach(c => { offs.push(tot); tot += c.paras.length; });
+  const upd = {}, stat = {};
+  ANN.forEach(a => {
+    Object.entries(a.updates || {}).forEach(([k, v]) => (upd[k] = upd[k] || []).push([a.id, v]));
+    Object.entries(a.status || {}).forEach(([k, v]) => (stat[k] = stat[k] || []).push([a.id, v]));
+  });
+  const ALL = Object.keys(E).filter(k => E[k].first != null);
+
+  // ---------- storage ----------
+  const KEY = 'ewt2';
+  const load = () => { try { return JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) { return null; } };
+  const persist = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} };
+  let S = load();
+  const today = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+  let firstRun = false;
+  if (!S) {
+    firstRun = true;
+    const START = 73;
+    S = { pos: { c: START, p: 0 }, far: {}, done: {}, cards: {}, quiz: {}, badges: {}, days: {}, fs: 19, theme: 'system', seenWelcome: false };
+    for (let c = 0; c < START; c++) { S.far[c] = CH[c].paras.length - 1; S.done[c] = 1; }
+    ALL.forEach(k => { if (E[k].first < START) S.cards[k] = 1; });
+  }
+  ['far', 'done', 'cards', 'quiz', 'badges', 'days'].forEach(k => S[k] = S[k] || {});
+
+  // ---------- levels & xp ----------
+  const LEVELS = [
+    [0, 'Rajkot Schoolboy'], [300, 'Vegetarian by Choice'], [800, 'Called to the Bar'], [1500, 'Briefless Barrister'],
+    [2500, 'Coolie Barrister'], [3800, 'Congress Secretary'], [5400, 'Phoenix Settler'], [7400, 'Satyagrahi'],
+    [9800, 'Ashram Founder'], [12600, 'Champion of Champaran'], [16000, 'Experimenter with Truth']
+  ];
+  function xpParts() {
+    let paras = 0; Object.entries(S.far).forEach(([c, f]) => paras += Math.min(f, CH[c].paras.length - 1) + 1);
+    const done = Object.keys(S.done).length, cards = Object.keys(S.cards).length, badges = Object.keys(S.badges).length;
+    let quiz = 0; Object.values(S.quiz).forEach(q => quiz += q.ok || 0);
+    return { paras, done, cards, badges, quiz, xp: paras * 2 + done * 40 + cards * 15 + quiz * 20 + badges * 100 };
+  }
+  function levelOf(xp) { let i = 0; while (i + 1 < LEVELS.length && xp >= LEVELS[i + 1][0]) i++; const lo = LEVELS[i][0], hi = LEVELS[i + 1] ? LEVELS[i + 1][0] : lo; return { i, n: i + 1, title: LEVELS[i][1], lo, hi, frac: hi > lo ? (xp - lo) / (hi - lo) : 1 }; }
+  function streak() {
+    const ds = new Set(Object.keys(S.days)); let n = 0; const d = new Date();
+    if (!ds.has(today())) d.setDate(d.getDate() - 1);
+    for (;;) { const k = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); if (ds.has(k)) { n++; d.setDate(d.getDate() - 1); } else break; }
+    return n;
+  }
+
+  // ---------- badges ----------
+  const MILE = [
+    [2, 'The First Experiment', 'i-book', 'Finish the first chapter of the story'], [12, 'A Vow to Mother', 'i-leaf', ''], [14, 'Across the Black Water', 'i-ship', ''],
+    [15, 'Vegetarian by Choice', 'i-leaf', ''], [25, 'Called to the Bar', 'i-scale', ''], [34, 'The Maritzburg Night', 'i-train', ''],
+    [44, 'Coolie Barrister', 'i-scale', ''], [45, 'Founding Member', 'i-star', ''], [58, 'Faced the Mob', 'i-flame', ''],
+    [96, 'Unto This Last', 'i-book', ''], [97, 'Phoenix Rising', 'i-leaf', ''], [103, 'The Vow', 'i-star', ''], [104, 'Truth-Force', 'i-wheel', ''],
+    [121, 'Homecoming', 'i-ship', ''], [134, 'Ashram Builder', 'i-home', ''], [144, 'The Stain of Indigo', 'i-leaf', ''],
+    [158, 'Himalayan Miscalculation', 'i-flame', ''], [165, 'The Wheel Turns', 'i-wheel', ''], [169, 'Farewell', 'i-star', 'Finish the whole book']
+  ];
+  const legendaryIds = ALL.filter(k => E[k].r === 'legendary');
+  const META = [
+    ['col25', 'Collector', 'i-cards', 'Collect 25 cards', () => Object.keys(S.cards).length >= 25],
+    ['col100', 'Archivist', 'i-cards', 'Collect 100 cards', () => Object.keys(S.cards).length >= 100],
+    ['col200', 'Living Archive', 'i-cards', 'Collect 200 cards', () => Object.keys(S.cards).length >= 200],
+    ['leg', 'Legend Hunter', 'i-star', 'Collect every legendary card', () => legendaryIds.every(k => S.cards[k])],
+    ['q10', 'Quiz Whiz', 'i-quest', 'Answer 10 quiz questions right', () => xpParts().quiz >= 10],
+    ['q60', 'Sharp Mind', 'i-quest', 'Answer 60 quiz questions right', () => xpParts().quiz >= 60],
+    ['ace', 'Perfect Recall', 'i-medal', 'Ace a chapter quiz', () => Object.values(S.quiz).some(q => q.ok === q.n && q.n >= 3)],
+    ['s3', 'Steady Spinner', 'i-flame', 'Read 3 days in a row', () => streak() >= 3],
+    ['s7', 'Week of Truth', 'i-flame', 'Read 7 days in a row', () => streak() >= 7],
+    ['mar', 'Marathon', 'i-train', 'Finish 5 chapters in one day', () => (S.days[today()] || 0) >= 5],
+    ['owl', 'Night Owl', 'i-moon', 'Read after 10 p.m.', () => S.owl === 1]
+  ];
+  const ALLB = [...MILE.map(([c, t, ic, d]) => ({ id: 'm' + c, t, ic, d: d || ('Finish Ch. ' + num(c)), c, test: () => !!S.done[c] })), ...META.map(([id, t, ic, d, test]) => ({ id, t, ic, d, test }))];
+  let medalN = 0;
+  function medal(ic, tone) {
+    const g = tone === 'lock' ? ['#5A5E70', '#2A2D3B'] : ['#F8D27E', '#B9770E']; const gid = 'mg' + (++medalN);
+    return `<svg class="medal" viewBox="0 0 80 80" aria-hidden="true"><defs><radialGradient id="${gid}" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="${g[0]}"/><stop offset="1" stop-color="${g[1]}"/></radialGradient></defs>` +
+      `<g fill="url(#${gid})">${[...Array(12)].map((_, i) => `<rect x="36" y="2" width="8" height="14" rx="3" transform="rotate(${i * 30} 40 40)"/>`).join('')}</g>` +
+      `<circle cx="40" cy="40" r="28" fill="url(#${gid})"/><circle cx="40" cy="40" r="22" fill="none" stroke="rgba(255,255,255,.55)" stroke-width="1.5" stroke-dasharray="2 3"/>` +
+      `<svg x="25" y="25" width="30" height="30" style="color:${tone === 'lock' ? '#1B1E2A' : '#4A2E00'}"><use href="#${ic}"/></svg></svg>`;
+  }
+
+  // ---------- state ----------
+  let cur = S.pos.c, top = S.pos.p || 0, bottom = top;
+  const visible = new Set(); const revealed = new Set();
+  let lastLevel = levelOf(xpParts().xp).n, bootSilent = firstRun;
+
+  function applyPrefs() {
+    document.documentElement.style.setProperty('--fs', S.fs + 'px');
+    if (S.theme === 'system') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', S.theme);
+  }
+  applyPrefs();
+
+  // ---------- spoiler gating ----------
+  function far(cid) { return Math.max(S.far[cid] != null ? S.far[cid] : -1, cid === cur ? bottom : -1); }
+  function passed(eid, cid) { const m = E[eid] && E[eid].mentions[cid]; const f = far(cid); return (m && m.length) ? f >= Math.max(...m) : f >= CH[cid].paras.length - 1; }
+  function latestStatus(eid) { let out = null; (stat[eid] || []).forEach(([cid, v]) => { if (cid < cur || (cid === cur && (passed(eid, cur) || revealed.has(eid)))) out = [cid, v]; }); return out; }
+  function lastActive(eid) { let last = E[eid].first; (upd[eid] || []).forEach(([c]) => { if (c < cur) last = Math.max(last, c); }); return last; }
+
+  // ---------- visuals ----------
+  function avatar(eid, cls) {
+    const e = E[eid]; const im = e.img;
+    return `<span class="av r-${e.r} ${cls || ''}" aria-hidden="true">${im ? `<img src="${imgSrc(im)}" alt="" loading="lazy">` : esc(initials(e.name))}</span>`;
+  }
+  function chip(eid) {
+    const e = E[eid]; if (!e) return '';
+    const name = eid === 'gandhi' ? 'Gandhi' : short(e.name);
+    return `<button class="chip ${e.kind}" data-e="${eid}" aria-label="${esc(e.name)}, ${RAR[e.r]} ${KIND[e.kind]}">${avatar(eid)}<span class="nm">${esc(name)}</span></button>`;
+  }
+  function card(eid, locked) {
+    const e = E[eid]; const h = hue(eid);
+    if (locked) return `<div class="card ${e.r} locked" aria-label="Locked ${RAR[e.r]} card"><div class="in"><div class="mono">?</div><div class="cap"><b>Not yet met</b><span>${RAR[e.r]}</span></div></div></div>`;
+    const inner = e.img ? `<img src="${imgSrc(e.img)}" alt="" loading="lazy">` :
+      `<div class="mono" style="background-color:hsl(${h} 35% 24%);background-image:radial-gradient(hsla(${(h + 40) % 360},60%,70%,.22) 1.2px,transparent 1.2px)">${esc(initials(e.name))}</div>`;
+    return `<button class="card ${e.r}" data-e="${eid}" aria-label="${esc(e.name)}, ${RAR[e.r]} card"><div class="in">${inner}<span class="gem"></span><div class="cap"><b>${esc(eid === 'gandhi' ? 'M. K. Gandhi' : short(e.name))}</b><span>${RAR[e.r]} · ${KIND[e.kind]}</span></div></div></button>`;
+  }
+
+  // ---------- toasts / fx ----------
+  const tq = []; let tbusy = false;
+  function toast(html) { tq.push(html); if (!tbusy) nextToast(); }
+  function nextToast() {
+    const h = tq.shift(); if (!h) { tbusy = false; return; } tbusy = true;
+    const el = document.createElement('div'); el.className = 'toast'; el.innerHTML = h; $('toasts').appendChild(el);
+    setTimeout(() => { el.classList.add('out'); setTimeout(() => { el.remove(); nextToast(); }, 330); }, tq.length > 2 ? 1500 : 2600);
+  }
+  function floatXP(n, el) {
+    const r = (el || $('xp-pill')).getBoundingClientRect(); const f = document.createElement('div'); f.className = 'float-xp';
+    f.textContent = '+' + n + ' XP'; f.style.left = Math.max(8, r.left + r.width / 2 - 30) + 'px'; f.style.top = (r.top + r.height) + 'px'; document.body.appendChild(f); setTimeout(() => f.remove(), 1150);
+    $('xp-pill').classList.remove('bump'); void $('xp-pill').offsetWidth; $('xp-pill').classList.add('bump');
+  }
+  function confetti() {
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const cv = $('confetti'); cv.hidden = false; const dpr = devicePixelRatio || 1; cv.width = innerWidth * dpr; cv.height = innerHeight * dpr; const x = cv.getContext('2d'); x.scale(dpr, dpr);
+    const cols = ['#F8D27E', '#D9961A', '#4457C7', '#7A4FD0', '#1F8A8A', '#F6F2E6'];
+    const P = [...Array(140)].map(() => ({ x: innerWidth / 2, y: innerHeight * .35, vx: (Math.random() - .5) * 12, vy: -Math.random() * 12 - 4, s: 4 + Math.random() * 6, r: Math.random() * 6, vr: (Math.random() - .5) * .4, c: cols[Math.floor(Math.random() * cols.length)] }));
+    let t = 0; (function f() { x.clearRect(0, 0, innerWidth, innerHeight); P.forEach(p => { p.vy += .32; p.x += p.vx; p.y += p.vy; p.vx *= .99; p.r += p.vr; x.save(); x.translate(p.x, p.y); x.rotate(p.r); x.fillStyle = p.c; x.fillRect(-p.s / 2, -p.s / 4, p.s, p.s / 2); x.restore(); }); if (++t < 150) requestAnimationFrame(f); else { x.clearRect(0, 0, innerWidth, innerHeight); cv.hidden = true; } })();
+  }
+  function modal(html, after) {
+    const m = $('modal'); m.innerHTML = `<div class="modal" id="mbg"><div class="modal-in" role="dialog" aria-modal="true">${html}</div></div>`; m.hidden = false;
+    const close = () => { m.hidden = true; m.innerHTML = ''; };
+    m.querySelector('#mbg').onclick = e => { if (e.target.id === 'mbg') close(); };
+    m.querySelectorAll('[data-close]').forEach(b => b.onclick = close);
+    if (after) after(m, close);
+    const b = m.querySelector('button'); if (b) b.focus({ preventScroll: true });
+  }
+
+  // ---------- progress events ----------
+  function collect(eid) {
+    if (S.cards[eid] || !E[eid]) return false;
+    S.cards[eid] = Date.now();
+    if (!bootSilent) {
+      const e = E[eid];
+      toast(`<div class="ic">${e.img ? `<img src="${imgSrc(e.img)}" alt="">` : `<svg><use href="#i-cards"/></svg>`}</div><div><b>New ${RAR[e.r].toLowerCase()} card: ${esc(short(e.name))}</b><span><span class="xp">+15 XP</span> · Tap the chip to see the profile</span></div>`);
+      floatXP(15);
+    }
+    return true;
+  }
+  function checkBadges() {
+    ALLB.forEach(b => {
+      if (!S.badges[b.id] && b.test()) {
+        S.badges[b.id] = Date.now();
+        if (!bootSilent) { toast(`<div class="ic"><svg><use href="#${b.ic}"/></svg></div><div><b>Badge unlocked: ${esc(b.t)}</b><span><span class="xp">+100 XP</span> · ${esc(b.d)}</span></div>`); confetti(); }
+      }
+    });
+  }
+  function afterChange() {
+    checkBadges();
+    const L = levelOf(xpParts().xp);
+    if (L.n > lastLevel && !bootSilent) {
+      confetti();
+      modal(`${medal('i-wheel', '')}<small>Level up · Level ${L.n}</small><h2>${esc(L.title)}</h2><p>You have ${xpParts().xp.toLocaleString()} XP. ${L.hi > L.lo ? (L.hi - xpParts().xp).toLocaleString() + ' XP to the next title.' : 'This is the highest title.'}</p><button class="btn gold" data-close>Keep reading</button>`);
+    }
+    lastLevel = L.n; renderPill(); persist();
+  }
+  function renderPill() { const P = xpParts(), L = levelOf(P.xp); $('xp-lv').textContent = L.n; $('xp-n').textContent = P.xp.toLocaleString(); }
+  function markDay() { const t = today(); if (S.days[t] == null) S.days[t] = 0; if (new Date().getHours() >= 22) S.owl = 1; }
+
+  // ---------- home ----------
+  function renderHome() {
+    document.body.classList.add('on-home');
+    $('reader').hidden = true; $('home').hidden = false;
+    const P = xpParts(), L = levelOf(P.xp), st = streak();
+    const nCards = Object.keys(S.cards).length, nB = Object.keys(S.badges).length;
+    const pendingQ = Object.keys(S.done).filter(c => !S.quiz[c] && quizFor(+c).length).length;
+    const heroK = HERO[cur] || 's_student';
+    const coverK = IMGS['s_student'] ? 's_student' : heroK;
+    const recent = Object.entries(S.cards).filter(([, t]) => t > 1).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([k]) => k);
+    const recentRow = (recent.length ? recent : ALL.filter(k => S.cards[k]).sort((a, b) => RORD[E[a].r] - RORD[E[b].r]).slice(0, 10));
+    const C = 2 * Math.PI * 34;
+    $('home').innerHTML = `
+      <div class="h-hero">${IMGS[coverK] ? `<img src="${imgSrc(coverK)}" alt="${esc(IMGS[coverK].cap)}">` : ''}
+        <div class="h-title gut stagger"><div class="h-eyebrow">M. K. Gandhi · translated by Mahadev Desai</div><h1>The Story of My Experiments with Truth</h1><p>${Math.round((offs[cur] + top) / tot * 100)}% read · Chapter ${num(cur)} of ${N}</p></div></div>
+      <div class="h-body gut stagger">
+        <section class="player" aria-label="Your progress">
+          <div class="ring"><svg viewBox="0 0 80 80"><circle class="bg" cx="40" cy="40" r="34" fill="none" stroke-width="7"/><circle class="fg" id="ringfg" cx="40" cy="40" r="34" fill="none" stroke-width="7" stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="${C}"/></svg><b>${L.n}</b><small>LEVEL</small></div>
+          <div><div class="lvl">Level ${L.n}</div><div class="ttl">${esc(L.title)}</div><div class="xpbar"><i id="homexp"></i></div><div class="xpnums"><span>${P.xp.toLocaleString()} XP</span><span>${L.hi > L.lo ? L.hi.toLocaleString() + ' next' : 'Max'}</span></div></div>
+          <div class="stats">
+            <div class="stat"><b><svg><use href="#i-flame"/></svg> ${st}</b><span>Streak</span></div>
+            <div class="stat"><b>${nCards}</b><span>Cards</span></div>
+            <div class="stat"><b>${nB}</b><span>Badges</span></div>
+            <div class="stat"><b>${Object.keys(S.done).length}</b><span>Chapters</span></div>
+          </div>
+        </section>
+        <button class="cont" id="h-cont"><span class="th">${IMGS[heroK] ? `<img src="${imgSrc(heroK)}" alt="">` : ''}</span><span><small>Continue · Ch. ${num(cur)}</small><strong>${esc(CH[cur].title)}</strong><em>${esc(placeText(ANN[cur]))}</em></span></button>
+        <div class="tiles">
+          <button class="tile" data-go="cards"><svg><use href="#i-cards"/></svg><b>Collection</b><span>${nCards} of ${ALL.length} cards</span></button>
+          <button class="tile" data-go="journey"><svg><use href="#i-map"/></svg><b>Journey</b><span>${ALL.filter(k => E[k].kind === 'place' && S.cards[k]).length} places reached</span></button>
+          <button class="tile" data-go="badges"><svg><use href="#i-medal"/></svg><b>Badges</b><span>${nB} of ${ALLB.length} earned</span></button>
+          <button class="tile" data-go="quests"><svg><use href="#i-quest"/></svg><b>Quizzes</b><span>${pendingQ} waiting</span>${pendingQ ? `<span class="badge">${pendingQ}</span>` : ''}</button>
+        </div>
+        <div class="h-sec">${recent.length ? 'Recently collected' : 'Your collection'}</div>
+        <div class="recent">${recentRow.map(k => card(k)).join('')}</div>
+        <div class="h-foot">Photos from Wikimedia Commons, all in the public domain · <button id="h-credits">Photo credits</button></div>
+      </div>`;
+    requestAnimationFrame(() => setTimeout(() => { const r = $('ringfg'); if (r) r.style.strokeDashoffset = C * (1 - L.frac); const x = $('homexp'); if (x) x.style.width = (L.frac * 100) + '%'; }, 120));
+    $('h-cont').onclick = () => openReader(cur, top);
+    $('home').querySelectorAll('[data-go]').forEach(b => b.onclick = () => ({ cards: cardsSheet, journey: journeySheet, badges: badgesSheet, quests: questsSheet })[b.dataset.go]());
+    $('h-credits').onclick = creditsSheet;
+    window.scrollTo(0, 0);
+    if (firstRun && !S.seenWelcome) {
+      S.seenWelcome = true; persist();
+      setTimeout(() => { confetti(); modal(`${medal('i-book', '')}<small>Welcome, reader</small><h2>You start at Chapter ${num(cur)}</h2><p>You've already read the first ${cur} chapters, so they are credited to you: <b style="color:var(--gold-2)">${P.xp.toLocaleString()} XP</b>, ${nCards} cards and ${nB} badges. You are a Level ${L.n} <b style="color:var(--gold-2)">${esc(L.title)}</b>.</p><p>Read to earn XP, meet people to collect their cards, and finish chapters to unlock quizzes and badges.</p><button class="btn gold" data-close>Let's go</button>`); }, 600);
+    }
+    bootSilent = false;
+  }
+  function placeText(a) { const pl = (a.where || []).map(id => E[id] ? short(E[id].name) : id); return pl.slice(0, 2).join(' · ') + (a.when ? (pl.length ? ' · ' : '') + a.when : ''); }
+
+  // ---------- reader ----------
+  function openReader(cid, pi) { document.body.classList.remove('on-home'); $('home').hidden = true; $('reader').hidden = false; renderChapter(cid, pi); }
+  function renderChapter(cid, pi) {
+    cur = cid; visible.clear(); top = pi || 0; bottom = top; markDay();
+    const c = CH[cid], a = ANN[cid], hk = HERO[cid], im = hk && IMGS[hk];
+    $('hero').innerHTML = `<section class="hero ${im ? '' : 'noimg'}">${im ? `<img src="${imgSrc(hk)}" alt="${esc(im.cap)}">` : ''}<div class="num" aria-hidden="true">${num(cid)}</div><div class="hd gut"><div class="hd-in"><div class="eb">${esc(label(c))}</div><h1>${esc(c.title)}</h1><div class="ml">${placeLine(a)}</div></div></div></section>${im ? `<div class="gut"><p class="credit">${esc(im.cap)}${im.date ? '' : ''}</p></div>` : ''}`;
+    const returning = Object.keys(a.updates || {}).filter(k => k !== 'gandhi' && E[k] && E[k].first < cid && E[k].kind === 'person').slice(0, 12);
+    let h = `<section class="recap" aria-label="Before you read"><h2>Before you read</h2><p>${esc(a.situation)}</p>`;
+    if (returning.length) h += `<div class="lbl">Returning in this chapter</div><div class="chips">${returning.map(chip).join('')}</div>`;
+    h += `</section><div class="txt">`;
+    c.paras.forEach((p, i) => { h += p.t === 'q' ? `<blockquote data-i="${i}">${p.h}</blockquote>` : `<p data-i="${i}">${p.h}</p>`; });
+    h += `</div><section class="endcard" id="endcard"></section>`;
+    $('chapter').innerHTML = h;
+    $('hd-t').textContent = `Ch. ${num(cid)} · ${c.title}`; $('hd-l').innerHTML = placeLine(a);
+    renderEnd(); observe(); renderPill();
+    if (pi > 0) { const el = document.querySelector(`[data-i="${pi}"]`); if (el) requestAnimationFrame(() => el.scrollIntoView({ block: 'start' })); } else window.scrollTo(0, 0);
+    lastStrip = ''; updateStrip(); updateProgress(); save();
+  }
+  function placeLine(a) {
+    const pl = (a.where || []).map(id => E[id] ? short(E[id].name) : id);
+    return (pl.length ? '<b>' + esc(pl.slice(0, 2).join(' · ')) + '</b>' : '') + (a.when ? (pl.length ? ' · ' : '') + esc(a.when) : '');
